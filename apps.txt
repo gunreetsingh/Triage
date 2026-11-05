@@ -1,0 +1,17 @@
+# One app name per line. Run with:
+#   python pipeline.py --from-file apps.txt --skip-existing
+#
+# A competitive set is the typical use: one category, several rivals.
+
+# Personal finance
+Revolut
+Monzo
+Robinhood
+
+# Health & fitness
+Strava
+Headspace
+
+# Productivity
+Notion
+Todoist
