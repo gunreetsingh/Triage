@@ -1,0 +1,18 @@
+# What Vercel installs and runs. Only the light packages live analysis needs;
+# the full local setup (embeddings, clustering, dashboard) is in
+# requirements-local.txt.
+[project]
+name = "triage"
+version = "1.0.0"
+description = "Search any app and see what its users want fixed."
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=2.1.0,<3",
+    "fastapi>=0.115",
+    "google-play-scraper>=1.2.7",
+    "python-dotenv>=1.0",
+    "requests>=2.32",
+]
+
+[tool.vercel]
+entrypoint = "vercel_app:app"

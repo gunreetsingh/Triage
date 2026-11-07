@@ -20,13 +20,13 @@ from __future__ import annotations
 import colorsys
 import io
 import json
-import re
 import sys
 from datetime import datetime, timezone
 
 import numpy as np
 import requests
 
+from .appstore import plain as _plain
 from .config import DATA_DIR, ROOT, RUNS_DIR
 
 WEB_DATA = ROOT / "web" / "data"
@@ -38,14 +38,6 @@ LAYOUT_CACHE = DATA_DIR / "layout"  # t-SNE coordinates; regenerable, not shippe
 # counts agree with what each app page shows.
 POSITIVE_AT = 3.75
 CRITICAL_AT = 75
-
-# The site uses no em dashes, including inside quoted reviews and model output.
-_EM_DASH = re.compile(r"\s*\u2014\s*")
-
-
-def _plain(text: str) -> str:
-    return _EM_DASH.sub(" - ", text or "").strip()
-
 
 UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 MAX_ICON_BYTES = 4 * 1024 * 1024

@@ -1,9 +1,11 @@
-/* #/analyze/<job>: live progress while the server analyzes an app nobody has
- * asked for before. Polls the job, lights up each step, and draws a ring of
- * particles that fills as reviews arrive and gathers into themes as they form.
- * When the report is ready it swaps itself for the app page. */
+/* Progress while an app nobody has asked for before is analyzed.
+ *   #/analyze/<job>  server.py runs the pipeline; this page polls the job.
+ *   #/live/<id>/<cc> Vercel: this page calls each step itself, builds the
+ *                    report in the browser and keeps it for this tab.
+ * Both light up each step and draw a ring of particles that fills as reviews
+ * arrive and gathers into themes as they form, then swap in the report. */
 import { $, $$, esc, int, clamp, lerp, marketName, reducedMotion, rng, cssRgb, isDark } from "../lib/util.js";
-import { api, invalidate } from "../lib/data.js";
+import { api, invalidate, saveLive } from "../lib/data.js";
 
 const STEPS = [
   { key: "resolve", label: "Finding it on the App Store and Google Play" },
@@ -14,21 +16,20 @@ const STEPS = [
   { key: "score", label: "Ranking themes and building the report" },
 ];
 const STEP_OF = { queued: -1, resolve: 0, scrape: 1, scraped: 1, embed: 2, cluster: 3, analyze: 4, score: 5, publish: 5, done: 6 };
+const LIVE_STEPS = [
+  { label: "Finding it on the App Store and Google Play" },
+  { label: "Reading the reviews each store shows first" },
+  { label: "Triage groups them into themes and writes a fix" },
+  { label: "Ranking themes and building the report" },
+];
 const TAU = Math.PI * 2;
 
 const icon = (job) => (/^https:\/\/[a-z0-9.-]+\.mzstatic\.com\//.test(job.icon || "")
   ? `<img class="an-icon" src="${esc(job.icon)}" alt="${esc(job.name)} logo" referrerpolicy="no-referrer">`
   : `<span class="an-icon app-icon--letter" aria-hidden="true">${esc((job.name || "?").charAt(0))}</span>`);
 
-export async function renderAnalyzing(main, scope, jobId) {
-  let job;
-  try {
-    job = await api.job(jobId);
-  } catch (e) {
-    main.innerHTML = goneHTML(e.status === 404 ? "That analysis isn't running any more." : e.message);
-    return;
-  }
-
+/** The page both modes share: header, step list, timer, ring and error box. */
+function layout(main, scope, job, steps, started) {
   main.innerHTML = `
     <section class="analyzing" aria-live="polite">
       <canvas class="an-canvas" aria-hidden="true"></canvas>
@@ -40,7 +41,7 @@ export async function renderAnalyzing(main, scope, jobId) {
         <div class="an-panel">
           <p class="an-wait" hidden></p>
           <ol class="an-steps">
-            ${STEPS.map((s, i) => `<li data-i="${i}"><span class="an-dot" aria-hidden="true"></span><span class="an-label">${s.label}<small></small></span></li>`).join("")}
+            ${steps.map((s, i) => `<li data-i="${i}"><span class="an-dot" aria-hidden="true"></span><span class="an-label">${s.label}<small></small></span></li>`).join("")}
           </ol>
           <div class="an-foot"><span class="an-time">0:00</span><span>Usually about a minute. Keep this page open and the report opens on its own.</span></div>
         </div>
@@ -50,7 +51,6 @@ export async function renderAnalyzing(main, scope, jobId) {
 
   const section = $(".analyzing", main);
   const ring = setupRing($(".an-canvas", section), scope);
-  const started = job.created ? job.created * 1000 : Date.now();
   const timeEl = $(".an-time", section);
   const tick = setInterval(() => {
     const s = Math.max(0, Math.round((Date.now() - started) / 1000));
@@ -58,38 +58,59 @@ export async function renderAnalyzing(main, scope, jobId) {
   }, 500);
   scope.add(() => clearInterval(tick));
 
+  return {
+    section,
+    ring,
+    small: (i) => $(`.an-steps li[data-i="${i}"] small`, section),
+    /** Mark the steps before `step` done and `step` itself in progress. */
+    steps(step, running = true) {
+      $$(".an-steps li", section).forEach((li, i) => {
+        li.classList.toggle("done", i < step);
+        li.classList.toggle("now", i === step && running);
+      });
+    },
+    fail(message) {
+      $(".an-panel", section).hidden = true;
+      const box = $(".an-error", section);
+      box.hidden = false;
+      box.innerHTML = `
+        <h2>Couldn't analyze this one</h2>
+        <p>${esc(message)}</p>
+        <div class="an-actions">
+          <button type="button" class="btn btn-primary" data-palette>Search another app</button>
+          <a class="btn btn-glass" href="#/apps">See analyzed apps</a>
+        </div>`;
+      ring.update({ status: "failed" }, -1);
+    },
+  };
+}
+
+export async function renderAnalyzing(main, scope, jobId) {
+  let job;
+  try {
+    job = await api.job(jobId);
+  } catch (e) {
+    main.innerHTML = goneHTML(e.status === 404 ? "That analysis isn't running any more." : e.message);
+    return;
+  }
+
+  const page = layout(main, scope, job, STEPS, job.created ? job.created * 1000 : Date.now());
+  const { section, ring, small } = page;
+
   let stopped = false;
   let timer = 0;
   scope.add(() => { stopped = true; clearTimeout(timer); });
 
   const paint = (j) => {
-    const step = STEP_OF[j.stage] ?? -1;
-    $$(".an-steps li", section).forEach((li, i) => {
-      li.classList.toggle("done", i < step || j.status === "done");
-      li.classList.toggle("now", i === step && j.status === "running");
-    });
-    const small = (i) => $(`.an-steps li[data-i="${i}"] small`, section);
+    const step = j.status === "done" ? STEPS.length : STEP_OF[j.stage] ?? -1;
+    page.steps(step, j.status === "running");
     if (j.reviews != null) small(1).textContent = `: ${int(j.reviews)} reviews${j.android ? " from both stores" : " from the App Store"}`;
     if (j.themes != null) small(3).textContent = `: ${int(j.themes)} themes`;
     if (j.stage === "analyze" && !j.llm) small(4).textContent = ": no API key on this server, so themes keep keyword labels";
     const wait = $(".an-wait", section);
     wait.hidden = j.status !== "queued";
     if (j.status === "queued") wait.textContent = j.ahead ? `Waiting in line. ${j.ahead} ${j.ahead === 1 ? "analysis" : "analyses"} ahead of you.` : "Starting…";
-    ring.update(j, step);
-  };
-
-  const fail = (message) => {
-    $(".an-panel", section).hidden = true;
-    const box = $(".an-error", section);
-    box.hidden = false;
-    box.innerHTML = `
-      <h2>Couldn't analyze this one</h2>
-      <p>${esc(message)}</p>
-      <div class="an-actions">
-        <button type="button" class="btn btn-primary" data-palette>Search another app</button>
-        <a class="btn btn-glass" href="#/apps">See analyzed apps</a>
-      </div>`;
-    ring.update({ status: "failed" }, -1);
+    ring.update(j, STEP_OF[j.stage] ?? -1);
   };
 
   const poll = async () => {
@@ -97,7 +118,7 @@ export async function renderAnalyzing(main, scope, jobId) {
     try {
       job = await api.job(jobId);
     } catch (e) {
-      fail(e.status === 404 ? "The server restarted before this analysis finished. Search for the app again to retry." : e.message);
+      page.fail(e.status === 404 ? "The server restarted before this analysis finished. Search for the app again to retry." : e.message);
       return;
     }
     paint(job);
@@ -107,11 +128,70 @@ export async function renderAnalyzing(main, scope, jobId) {
       timer = setTimeout(() => { if (!stopped) location.replace(`#/app/${encodeURIComponent(job.slug)}`); }, 700);
       return;
     }
-    if (job.status === "failed") { fail(job.error || "Something went wrong."); return; }
+    if (job.status === "failed") { page.fail(job.error || "Something went wrong."); return; }
     timer = setTimeout(poll, 1000);
   };
   paint(job);
   timer = setTimeout(poll, 800);
+}
+
+export async function renderLive(main, scope, iosId, country) {
+  let pick = {};
+  try { pick = JSON.parse(sessionStorage.getItem(`triage-pick:${iosId}`) || "{}") || {}; } catch { /* optional */ }
+  const job = { name: pick.name || "This app", publisher: pick.publisher || "", icon: pick.icon, country };
+  const page = layout(main, scope, job, LIVE_STEPS, Date.now());
+  const { section, ring, small } = page;
+
+  let stopped = false;
+  scope.add(() => { stopped = true; });
+
+  await api.check();
+  if (!api.live) {
+    page.fail("Live analysis isn't available on this site. Open one of the analyzed apps instead.");
+    return;
+  }
+
+  try {
+    page.steps(0);
+    ring.update({}, 0);
+    const data = await api.collect(iosId, country);
+    if (stopped) return;
+    $(".an-title", section).textContent = data.name;
+    $(".an-sub", section).textContent = data.publisher || "";
+    const both = data.listings.length > 1;
+    small(1).textContent = `: ${int(data.reviews.length)} reviews${both ? " from both stores" : " from the App Store"}`;
+    page.steps(2);
+    ring.update({ reviews: data.reviews.length }, 3);
+
+    const res = await api.themes(data.name, data.reviews, data.token);
+    if (stopped) return;
+    const assign = res.assign || {};
+    small(2).textContent = `: ${int(res.themes.length)} themes`;
+    page.steps(3);
+    ring.update({ reviews: data.reviews.length, themes: res.themes.length }, 5);
+
+    saveLive({
+      slug: data.slug,
+      name: data.name,
+      generated_at: data.generated_at,
+      market: data.market,
+      ios_sort: "helpful",
+      android_sort: "relevant",
+      llm: true,
+      icon: data.icon,
+      brand: null,
+      has_map: false,
+      listings: data.listings,
+      themes: res.themes,
+      reviews: data.reviews.filter((r) => r.i in assign).map((r) => ({ ...r, c: assign[r.i] })),
+    });
+    page.steps(LIVE_STEPS.length, false);
+    ring.update({ status: "done", reviews: data.reviews.length, themes: res.themes.length }, 6);
+    // Replace this entry so Back goes to wherever the search started.
+    setTimeout(() => { if (!stopped) location.replace(`#/app/${encodeURIComponent(data.slug)}`); }, 600);
+  } catch (e) {
+    if (!stopped) page.fail(e.message || "Something went wrong.");
+  }
 }
 
 function goneHTML(message) {

@@ -20,7 +20,6 @@ daily cap, and a queue cap. All limits are environment variables (below).
 from __future__ import annotations
 
 import os
-import re
 import threading
 import time
 import uuid
@@ -38,16 +37,15 @@ load_dotenv()
 
 import pipeline  # noqa: E402  (after load_dotenv so the API key is visible)
 from triage import analyze, web  # noqa: E402
+from triage.appstore import COUNTRIES, analyzed, client_ip, itunes, safe_artwork, search_apps, short_name  # noqa: E402
 from triage.config import ROOT, slugify  # noqa: E402
 from triage.models import AppRef  # noqa: E402
 from triage.scrape import pick_same_app, resolve_android  # noqa: E402
 
-COUNTRIES = {"us", "ca", "gb", "au", "in", "ie", "nz"}
 PER_IP_PER_HOUR = int(os.environ.get("TRIAGE_PER_IP_PER_HOUR", "4"))
 DAILY_LIMIT = int(os.environ.get("TRIAGE_DAILY_LIMIT", "60"))
 MAX_QUEUE = int(os.environ.get("TRIAGE_MAX_QUEUE", "12"))
 PER_PLATFORM = int(os.environ.get("TRIAGE_PER_PLATFORM", "500"))
-UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
 
 jobs: dict[str, dict] = {}
 pending: deque[str] = deque()
@@ -62,16 +60,6 @@ daily = {"day": date.today(), "count": 0}
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
-def analyzed() -> dict[tuple[str, str], str]:
-    """(ios_id, market) -> slug for every report the site already has."""
-    try:
-        import json
-        manifest = json.loads((web.WEB_DATA / "apps.json").read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return {(a.get("ios_id"), a.get("market")): a["slug"] for a in manifest.get("apps", []) if a.get("ios_id")}
-
-
 def existing_slugs() -> dict[str, tuple[str | None, str | None]]:
     try:
         import json
@@ -79,32 +67,6 @@ def existing_slugs() -> dict[str, tuple[str | None, str | None]]:
     except (OSError, ValueError):
         return {}
     return {a["slug"]: (a.get("ios_id"), a.get("market")) for a in manifest.get("apps", [])}
-
-
-def short_name(title: str) -> str:
-    """Drop the marketing subtitle: 'Spotify: Music and Podcasts' -> 'Spotify'.
-
-    Only the colon (and '|') mark a subtitle. A dash often carries meaning --
-    'Uber - Request a ride' and 'Uber - Driver' are different apps -- so it stays.
-    """
-    head = re.split(r"\s*[:|]\s*", title.strip(), maxsplit=1)[0].strip()
-    return head if len(head) >= 2 else title.strip()
-
-
-def safe_artwork(url: str | None) -> str | None:
-    return url if isinstance(url, str) and re.match(r"^https://[a-z0-9.-]+\.mzstatic\.com/", url) else None
-
-
-def itunes(path: str, **params) -> list[dict]:
-    r = requests.get(f"https://itunes.apple.com/{path}", params=params, headers=UA, timeout=15)
-    r.raise_for_status()
-    return r.json().get("results") or []
-
-
-def client_ip(request: Request) -> str:
-    # Behind a proxy (Render, Fly, Railway...) the visitor is the first hop.
-    forwarded = request.headers.get("x-forwarded-for", "")
-    return forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
 
 
 def public(job: dict) -> dict:
@@ -223,24 +185,9 @@ def search(q: str = "", country: str = "us"):
     if len(q) < 2:
         return {"results": []}
     try:
-        results = itunes("search", term=q, country=country, entity="software", limit=8)
+        return {"results": search_apps(q, country)}
     except requests.RequestException:
         raise HTTPException(502, "Couldn't reach the App Store.")
-    done = analyzed()
-    return {"results": [
-        {
-            "ios_id": str(r["trackId"]),
-            "title": r.get("trackName", ""),
-            "name": short_name(r.get("trackName", "")),
-            "publisher": r.get("sellerName", ""),
-            "icon": safe_artwork(r.get("artworkUrl100")),
-            "rating": round(float(r.get("averageUserRating") or 0), 2),
-            "ratings": int(r.get("userRatingCount") or 0),
-            "genre": r.get("primaryGenreName", ""),
-            "slug": done.get((str(r["trackId"]), country)),
-        }
-        for r in results if r.get("trackId")
-    ]}
 
 
 class AnalyzeRequest(BaseModel):

@@ -4,17 +4,18 @@
  *   #/app/<slug>     an app's report
  *   #/app/<slug>/<n> the same, with theme n open in the drawer
  *   #/analyze/<job>  live progress while the server analyzes a new app
+ *   #/live/<id>/<cc> the same on Vercel, where the browser drives each step
  * The homepage is the show: a curtain on first load, smooth scrolling, scroll
  * reveals. Reports and progress pages are the tool: they swap in at once. */
 import { $, $$, esc, reducedMotion } from "./lib/util.js";
-import { loadManifest, loadApp } from "./lib/data.js";
+import { findApp, loadApp } from "./lib/data.js";
 import { initScroll, initPointerFx, initCursor, onFrame, Scope, reveal, curtain, scroller, setMode } from "./lib/motion.js";
 import { initDrawer, openDrawer, closeDrawer } from "./lib/drawer.js";
 import { initPalette, closePalette } from "./lib/palette.js";
 import { hideTip } from "./lib/charts.js";
 import { renderHome } from "./views/home.js";
 import { renderApp } from "./views/appview.js";
-import { renderAnalyzing } from "./views/analyzing.js";
+import { renderAnalyzing, renderLive } from "./views/analyzing.js";
 
 const main = $("#main");
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -27,6 +28,9 @@ const bootFloor = wait(reducedMotion.matches ? 0 : 1100);
 function parseRoute() {
   const parts = location.hash.replace(/^#\/?/, "").split("/").filter(Boolean).map(decodeURIComponent);
   if (parts[0] === "analyze" && parts[1]) return { view: "analyze", job: parts[1] };
+  if (parts[0] === "live" && /^\d{1,12}$/.test(parts[1] || "") && /^[a-z]{2}$/.test(parts[2] || "")) {
+    return { view: "live", iosId: parts[1], country: parts[2] };
+  }
   if (parts[0] === "app" && parts[1]) {
     const theme = parts[2] !== undefined && /^\d+$/.test(parts[2]) ? Number(parts[2]) : null;
     return { view: "app", slug: parts[1], theme };
@@ -100,6 +104,12 @@ async function route() {
     return;
   }
 
+  if (r.view === "live") {
+    await show(`live:${r.iosId}:${r.country}`, (s) => renderLive(main, s, r.iosId, r.country));
+    setNav("");
+    return;
+  }
+
   if (r.view === "app") {
     const key = `app:${r.slug}`;
     if (viewKey === key) {
@@ -108,7 +118,7 @@ async function route() {
       return;
     }
     let meta = null;
-    try { meta = (await loadManifest()).apps.find((a) => a.slug === r.slug); } catch { /* handled below */ }
+    try { meta = await findApp(r.slug); } catch { /* handled below */ }
     if (!meta) {
       await show("missing", async () => {
         renderState("App not found", "There's no analysis for that app yet.", '<a class="btn btn-primary" href="#/apps">All apps</a>');

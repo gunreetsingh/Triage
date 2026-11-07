@@ -66,6 +66,7 @@ function storeItems(shownKeys) {
       kind: r.slug ? "link" : "analyze",
       href: r.slug ? `#/app/${encodeURIComponent(r.slug)}` : null,
       iosId: r.ios_id,
+      pick: { name: r.name, publisher: r.publisher, icon: r.icon },
       title: r.title || r.name,
       sub: [r.publisher, r.ratings ? `${r.rating.toFixed(1)}★ · ${r.ratings.toLocaleString("en-US")} ratings` : "No ratings yet"].filter(Boolean).join(" · "),
       iconHTML: storeIcon(r.icon),
@@ -152,6 +153,12 @@ function scheduleSearch() {
 async function choose(it) {
   if (!it || busy) return;
   if (it.kind === "link") { go(it.href); return; }
+  if (api.live) {
+    // Vercel: the progress page runs the analysis itself; hand it what we know.
+    try { sessionStorage.setItem(`triage-pick:${it.iosId}`, JSON.stringify(it.pick)); } catch { /* optional */ }
+    go(`#/live/${encodeURIComponent(it.iosId)}/${market}`);
+    return;
+  }
   busy = true;
   live = { ...live, state: "loading" };
   try {

@@ -5,6 +5,7 @@ import { DAY, clamp } from "./util.js";
 export const state = {
   manifest: null,
   cache: new Map(),
+  live: new Map(),
 };
 
 async function getJSON(url) {
@@ -18,9 +19,43 @@ export async function loadManifest() {
   return state.manifest;
 }
 
+// --------------------------------------------------------------------------
+// live reports (the Vercel deployment): built in the browser, never saved on
+// the server, so they're kept for this tab in sessionStorage.
+// --------------------------------------------------------------------------
+const LIVE_KEY = "triage-live:";
+export const isLiveSlug = (slug) => /^live-\d{1,12}-[a-z]{2}$/.test(slug);
+
+export function saveLive(raw) {
+  state.cache.delete(raw.slug);
+  state.live.set(raw.slug, raw);
+  try { sessionStorage.setItem(LIVE_KEY + raw.slug, JSON.stringify(raw)); } catch { /* full or blocked: memory only */ }
+}
+
+function liveRaw(slug) {
+  if (state.live.has(slug)) return state.live.get(slug);
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(LIVE_KEY + slug) || "null");
+    if (raw) state.live.set(slug, raw);
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/** The manifest entry for a built report, or a stand-in for a live one. */
+export async function findApp(slug) {
+  if (isLiveSlug(slug)) {
+    const raw = liveRaw(slug);
+    return raw && { slug, name: raw.name, icon: raw.icon, brand: raw.brand, market: raw.market };
+  }
+  return (await loadManifest()).apps.find((a) => a.slug === slug) || null;
+}
+
 export async function loadApp(slug) {
   if (state.cache.has(slug)) return state.cache.get(slug);
-  const raw = await getJSON(`data/apps/${encodeURIComponent(slug)}.json`);
+  const raw = isLiveSlug(slug) ? liveRaw(slug) : await getJSON(`data/apps/${encodeURIComponent(slug)}.json`);
+  if (!raw) throw new Error("This report was made in another tab or has expired. Search for the app again.");
   let minTs = Infinity;
   let maxTs = -Infinity;
   const present = new Set();
@@ -152,8 +187,10 @@ export function invalidate(slug) {
 }
 
 // --------------------------------------------------------------------------
-// live analysis API (server.py). On a plain static host these endpoints
-// don't exist, and the site sticks to the apps it was built with.
+// live analysis API. server.py (mode "server") queues jobs and saves reports;
+// vercel_app.py (mode "live") collects reviews and themes on request and the
+// browser builds the report. On a plain static host neither exists, and the
+// site sticks to the apps it was built with.
 // --------------------------------------------------------------------------
 async function apiFetch(path, init) {
   const res = await fetch(path, { cache: "no-store", ...init });
@@ -192,5 +229,20 @@ export const api = {
   },
   job(id) {
     return apiFetch(`api/jobs/${encodeURIComponent(id)}`);
+  },
+  get live() { return this.info?.mode === "live"; },
+  collect(iosId, country) {
+    return apiFetch("api/collect", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ios_id: String(iosId), country }),
+    });
+  },
+  themes(name, reviews, token) {
+    return apiFetch("api/themes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, reviews, token }),
+    });
   },
 };

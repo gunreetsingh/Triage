@@ -54,14 +54,16 @@ export function safeStoreUrl(raw) {
   }
 }
 
-/** Icon paths come from our own export ("data/icons/<slug>.png"); refuse anything else. */
-export const safeIcon = (p) => (typeof p === "string" && /^data\/icons\/[a-z0-9-]+\.png$/.test(p) ? p : null);
+/** Icons come from our own export ("data/icons/<slug>.png") or, for live
+ *  reports, straight from Apple's image CDN; refuse anything else. */
+export const safeIcon = (p) => (typeof p === "string"
+  && (/^data\/icons\/[a-z0-9-]+\.png$/.test(p) || /^https:\/\/[a-z0-9.-]+\.mzstatic\.com\//.test(p)) ? p : null);
 
 export function appIcon(app, cls = "app-icon", { alt = "" } = {}) {
   const src = safeIcon(app.icon);
   const initial = esc((app.name || "?").trim().charAt(0).toUpperCase());
   return src
-    ? `<img class="${cls}" src="${src}" alt="${esc(alt)}" decoding="async" draggable="false">`
+    ? `<img class="${cls}" src="${esc(src)}" alt="${esc(alt)}" decoding="async" draggable="false" referrerpolicy="no-referrer">`
     : `<span class="${cls} app-icon--letter" aria-hidden="true">${initial}</span>`;
 }
 

@@ -1,0 +1,8 @@
+# Not needed by the Vercel deployment (see pyproject.toml).
+data/
+apps.txt
+app.py
+pipeline.py
+relabel.py
+server.py
+requirements-local.txt

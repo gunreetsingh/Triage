@@ -174,38 +174,8 @@ def _clean(text: str) -> str:
 # --------------------------------------------------------------------------
 # resolution
 # --------------------------------------------------------------------------
-def resolve_ios(name: str, country: str = "us", limit: int = 8) -> list[AppRef]:
-    """Candidate iOS listings for ``name``, best title match first."""
-    r = _session().get(
-        ITUNES_SEARCH,
-        params={"term": name, "country": country, "entity": "software", "limit": limit},
-        timeout=30,
-    )
-    r.raise_for_status()
-    out: list[AppRef] = []
-    for item in r.json().get("results", []):
-        out.append(
-            AppRef(
-                platform="iOS",
-                ident=str(item["trackId"]),
-                title=item.get("trackName", ""),
-                publisher=item.get("sellerName", ""),
-                ratings=int(item.get("userRatingCount") or 0),
-                url=item.get("trackViewUrl", ""),
-                rating=float(item.get("averageUserRating") or 0),
-            )
-        )
-    return _rank_candidates(name, out)
-
-
-def lookup_ios(ident: str, country: str = "us") -> AppRef | None:
-    """One iOS listing by track id, with that storefront's rating."""
-    r = _session().get(ITUNES_LOOKUP, params={"id": ident, "country": country}, timeout=30)
-    r.raise_for_status()
-    items = r.json().get("results", [])
-    if not items:
-        return None
-    item = items[0]
+def ios_ref(item: dict) -> AppRef:
+    """An iOS listing from an iTunes search/lookup result, with that storefront's rating."""
     return AppRef(
         platform="iOS",
         ident=str(item["trackId"]),
@@ -215,6 +185,25 @@ def lookup_ios(ident: str, country: str = "us") -> AppRef | None:
         url=item.get("trackViewUrl", ""),
         rating=float(item.get("averageUserRating") or 0),
     )
+
+
+def resolve_ios(name: str, country: str = "us", limit: int = 8) -> list[AppRef]:
+    """Candidate iOS listings for ``name``, best title match first."""
+    r = _session().get(
+        ITUNES_SEARCH,
+        params={"term": name, "country": country, "entity": "software", "limit": limit},
+        timeout=30,
+    )
+    r.raise_for_status()
+    return _rank_candidates(name, [ios_ref(item) for item in r.json().get("results", [])])
+
+
+def lookup_ios(ident: str, country: str = "us") -> AppRef | None:
+    """One iOS listing by track id, with that storefront's rating."""
+    r = _session().get(ITUNES_LOOKUP, params={"id": ident, "country": country}, timeout=30)
+    r.raise_for_status()
+    items = r.json().get("results", [])
+    return ios_ref(items[0]) if items else None
 
 
 def resolve_android(name: str, country: str = "us", limit: int = 8) -> list[AppRef]:
