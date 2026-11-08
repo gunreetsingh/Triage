@@ -1,8 +1,9 @@
-# Not needed by the Vercel deployment (see pyproject.toml).
-data/
-apps.txt
-app.py
-pipeline.py
-relabel.py
-server.py
-requirements-local.txt
+# Not needed by the Vercel deployment (see pyproject.toml). Anchored with a
+# leading / so web/data (the site's reports) still ships.
+/data/
+/apps.txt
+/app.py
+/pipeline.py
+/relabel.py
+/server.py
+/requirements-local.txt
