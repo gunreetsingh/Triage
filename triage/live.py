@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 from .appstore import itunes, plain, safe_artwork, short_name
 from .config import MODEL
 from .models import AppRef, Review
-from .scrape import fetch_android_reviews, fetch_ios_reviews, ios_ref, pick_same_app, resolve_android
+from .scrape import ITUNES_RSS, UA, fetch_android_reviews, fetch_ios_reviews, ios_ref, pick_same_app, resolve_android
 
 PER_PLATFORM = int(os.environ.get("TRIAGE_LIVE_PER_PLATFORM", "200"))
 MIN_REVIEWS = 20
@@ -100,6 +100,16 @@ def _listing(ref: AppRef) -> dict:
             "ratings": ref.ratings, "rating": round(ref.rating, 2)}
 
 
+def _probe_feed(ident: str, country: str) -> str:
+    """What Apple's review feed answered, for when it returned no reviews."""
+    url = ITUNES_RSS.format(country=country, page=1, ident=ident, sort="mosthelpful")
+    try:
+        r = requests.get(url, headers={"User-Agent": UA}, timeout=15)
+    except requests.RequestException as e:
+        return f"feed unreachable ({e.__class__.__name__})"
+    return f"feed HTTP {r.status_code}, {len(r.content)} bytes, {r.headers.get('content-type', '?')}: {r.text[:160]!r}"
+
+
 def collect(ios_id: str, country: str) -> dict:
     """Find the app on both stores and read its reviews, in store order."""
     items = itunes("lookup", id=ios_id, country=country)
@@ -113,6 +123,8 @@ def collect(ios_id: str, country: str) -> dict:
         android = None
 
     reviews = fetch_ios_reviews(ios.ident, (country,), PER_PLATFORM, sort="helpful")
+    # The feed fails silently (it just stops); say why when it gave nothing.
+    ios_note = None if reviews else _probe_feed(ios.ident, country)
     if android:
         reviews += fetch_android_reviews(android.ident, country, target=PER_PLATFORM, sort="relevant")
     if len(reviews) < MIN_REVIEWS:
@@ -120,6 +132,7 @@ def collect(ios_id: str, country: str) -> dict:
 
     short = [_short(r) for r in reviews]
     return {
+        "ios_note": ios_note,
         "slug": f"live-{ios_id}-{country}",
         "name": name,
         "publisher": ios.publisher,
