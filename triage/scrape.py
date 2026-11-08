@@ -8,6 +8,7 @@ user actually meant, so package resolution reads the search page directly.
 """
 from __future__ import annotations
 
+import json
 import re
 import time
 from datetime import datetime, timezone
@@ -262,26 +263,67 @@ def _rss_text(entry: dict) -> str:
     return _clean((content or {}).get("label", ""))
 
 
-def apple_shown_ids(ident: str, country: str) -> list[str]:
-    """Review ids Apple's own "Ratings & Reviews" page shows, in its order.
+def apple_page_reviews(ident: str, country: str) -> list[dict]:
+    """The reviews Apple's own "Ratings & Reviews" page shows, in its order.
 
     That page (up to 10 reviews) is the top of the "Most Helpful" list the App
     Store app opens with. The RSS feed ranks almost the same way but not quite:
-    Apple's page hides a few feed reviews and swaps some neighbours."""
+    Apple's page hides a few feed reviews and swaps some neighbours. Each item
+    is Apple's own record: id, title, contents, rating, reviewerName, date."""
     url = APPLE_SEE_ALL.format(country=country, ident=ident)
     html = requests.get(url, headers={"User-Agent": SAFARI_UA}, timeout=30).text
-    return list(dict.fromkeys(APPLE_PAGE_REVIEW.findall(html)))
+    decoder = json.JSONDecoder()
+    seen: dict[str, dict] = {}
+    for m in APPLE_PAGE_REVIEW.finditer(html):
+        if html[m.start() - 1] != "{":
+            continue
+        try:
+            item, _ = decoder.raw_decode(html, m.start() - 1)
+        except ValueError:
+            continue
+        seen.setdefault(str(item.get("id")), item)
+    return list(seen.values())
+
+
+def apple_shown_ids(ident: str, country: str) -> list[str]:
+    return [r["id"] for r in apple_page_reviews(ident, country)]
+
+
+def _page_review(item: dict, country: str, position: int) -> Review | None:
+    try:
+        dt = datetime.fromisoformat(item["date"].replace("Z", "+00:00")).astimezone(timezone.utc).replace(tzinfo=None)
+        rating = int(item["rating"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    return Review(
+        review_id=f"ios-{item['id']}",
+        platform="iOS",
+        rating=rating,
+        date=dt.isoformat(timespec="seconds"),
+        ts=int(dt.replace(tzinfo=timezone.utc).timestamp()),
+        text=_clean(item.get("contents") or ""),
+        title=_clean(item.get("title") or ""),
+        author=_clean(item.get("reviewerName") or ""),
+        country=country,
+        position=position,
+    )
 
 
 def _match_apple_page(reviews: list[Review], ident: str, country: str) -> list[Review]:
     """Put the reviews Apple's page shows first, in its order; drop the feed
-    reviews Apple hides from that window; keep the feed order after it."""
+    reviews Apple hides from that window; keep the feed order after it.
+
+    Apple's feed sometimes answers with no reviews at all (it throttles); then
+    the page's own reviews are used, so the top of the list is still right."""
     try:
-        shown = apple_shown_ids(ident, country)
+        page = apple_page_reviews(ident, country)
     except requests.RequestException:
         return reviews
+    if not reviews:
+        built = (_page_review(item, country, i) for i, item in enumerate(page))
+        return [r for r in built if r]
     by_id = {r.review_id: r for r in reviews}
-    top = [by_id[f"ios-{i}"] for i in shown if f"ios-{i}" in by_id]
+    top = [by_id[f"ios-{item['id']}"] for item in page if f"ios-{item['id']}" in by_id]
     if not top:
         return reviews
     window = max(r.position for r in top)
